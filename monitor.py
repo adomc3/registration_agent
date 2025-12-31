@@ -8,8 +8,6 @@ from email.mime.text import MIMEText
 
 #================= CONFIG =================
 
-load_dotenv()
-
 EMAIL = os.getenv("EMAIL")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
 RECIPIENT = os.getenv("RECIPIENT_EMAIL", EMAIL)
@@ -190,4 +188,5 @@ async def monitor():
 
 if __name__ == "__main__":
     asyncio.run(monitor())
+
 
