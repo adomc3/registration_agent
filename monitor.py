@@ -6,7 +6,7 @@ from playwright.async_api import async_playwright
 import smtplib
 from email.mime.text import MIMEText
 
-# ================= CONFIG =================
+#================= CONFIG =================
 
 load_dotenv()
 
@@ -190,3 +190,4 @@ async def monitor():
 
 if __name__ == "__main__":
     asyncio.run(monitor())
+
