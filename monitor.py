@@ -1,7 +1,6 @@
 import asyncio
 import os
 from datetime import datetime
-from dotenv import load_dotenv
 from playwright.async_api import async_playwright
 import smtplib
 from email.mime.text import MIMEText
@@ -188,5 +187,6 @@ async def monitor():
 
 if __name__ == "__main__":
     asyncio.run(monitor())
+
 
 
