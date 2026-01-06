@@ -13,7 +13,7 @@ RECIPIENT = os.getenv("RECIPIENT_EMAIL", EMAIL)
 
 RESERVATION_URL = "https://reservation.lesgrandsbuffets.com/contact"
 CHECK_INTERVAL = 300  # 5 minutes
-GUESTS = "11"
+GUESTS = "6"
 
 FULLY_BOOKED_PHRASES = [
     "we regret to inform you",
@@ -187,6 +187,7 @@ async def monitor():
 
 if __name__ == "__main__":
     asyncio.run(monitor())
+
 
 
 
