@@ -3,31 +3,56 @@ name: Restaurant Reservation Monitor
 on:
   workflow_dispatch:        # allows manual run
   schedule:
-    - cron: "*/15 * * * *"  # runs every 15 minutes
+    - cron: "*/10 * * * *"  # runs every 10 minutes
 
 jobs:
   check-reservation:
     runs-on: ubuntu-latest
-
+    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
+      
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
+      
+      - name: Cache state file
+        uses: actions/cache@v4
+        with:
+          path: run_state.json
+          key: reservation-state-${{ github.run_number }}
+          restore-keys: |
+            reservation-state-
+      
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install playwright
           python -m playwright install chromium
-
+          python -m playwright install-deps chromium
+      
       - name: Run reservation agent
         env:
           EMAIL: ${{ secrets.EMAIL }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+          MONITORING_EMAIL: ${{ secrets.MONITORING_EMAIL }}
         run: |
-          python monitor.py
+          python reservation_checker.py
+      
+      - name: Save state file
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: run_state.json
+          key: reservation-state-${{ github.run_number }}
+      
+      - name: Upload state file as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: state-file-${{ github.run_number }}
+          path: run_state.json
+          retention-days: 30
