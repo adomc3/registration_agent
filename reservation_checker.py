@@ -16,6 +16,8 @@ MONITORING_EMAIL = os.getenv("MONITORING_EMAIL")
 
 RESERVATION_URL = "https://reservation.lesgrandsbuffets.com/contact"
 GUESTS = "7"
+SERVICE_TYPE = "dinner"  # "lunch" or "dinner"
+MONTHS_AHEAD = 4  # How many months to check in advance
 
 FULLY_BOOKED_PHRASES = [
     "we regret to inform you",
@@ -24,6 +26,9 @@ FULLY_BOOKED_PHRASES = [
     "restaurant est complet",
     "complet"
 ]
+
+DINNER_KEYWORDS = ["dinner", "dîner", "diner", "soir", "evening", "19:", "20:", "21:"]
+LUNCH_KEYWORDS = ["lunch", "déjeuner", "dejeuner", "midi", "12:", "13:", "14:"]
 
 STATE_FILE = "run_state.json"
 
@@ -134,9 +139,73 @@ def is_friday_or_saturday(text: str) -> bool:
     return any(day in text for day in ["fri", "vendredi", "sat", "samedi"])
 
 
+def is_dinner_service(text: str) -> bool:
+    """Check if text indicates dinner service"""
+    text = text.lower()
+    
+    if SERVICE_TYPE == "dinner":
+        # Check for dinner keywords
+        return any(keyword in text for keyword in DINNER_KEYWORDS)
+    elif SERVICE_TYPE == "lunch":
+        # Check for lunch keywords
+        return any(keyword in text for keyword in LUNCH_KEYWORDS)
+    else:
+        # If no service type specified, accept all
+        return True
+
+
+def is_within_date_range(text: str) -> bool:
+    """Check if date is within the next 4 months (INCLUDE all dates in this range)"""
+    from datetime import datetime, timedelta
+    import re
+    
+    # Try to extract date from text
+    # Common formats: "Friday 25 April", "Vendredi 25 avril 2025", etc.
+    months_en = ["january", "february", "march", "april", "may", "june", 
+                 "july", "august", "september", "october", "november", "december"]
+    months_fr = ["janvier", "février", "mars", "avril", "mai", "juin",
+                 "juillet", "août", "septembre", "octobre", "novembre", "décembre"]
+    
+    text_lower = text.lower()
+    
+    # Find month in text
+    month_num = None
+    for i, month in enumerate(months_en + months_fr, 1):
+        if month in text_lower:
+            month_num = (i % 12) if i > 12 else i
+            break
+    
+    if not month_num:
+        # Can't determine date, include it to be safe
+        return True
+    
+    # Extract day number
+    day_match = re.search(r'\b(\d{1,2})\b', text)
+    if not day_match:
+        return True
+    
+    day_num = int(day_match.group(1))
+    
+    # Extract or assume year
+    year_match = re.search(r'\b(20\d{2})\b', text)
+    current_year = datetime.now().year
+    year_num = int(year_match.group(1)) if year_match else current_year
+    
+    try:
+        date_found = datetime(year_num, month_num, day_num)
+        today = datetime.now()
+        max_date = today + timedelta(days=MONTHS_AHEAD * 30)
+        
+        # INCLUDE dates from today up to 4 months ahead
+        return today <= date_found <= max_date
+    except:
+        # Invalid date, include it to be safe
+        return True
+
+
 async def gather_candidate_buttons(page):
-    """Find all enabled Friday/Saturday date buttons"""
-    print("🔍 Scanning for Friday/Saturday date buttons...")
+    """Find all enabled Friday/Saturday DINNER date buttons within 4 months"""
+    print(f"🔍 Scanning for Friday/Saturday {SERVICE_TYPE} buttons (next {MONTHS_AHEAD} months)...")
 
     buttons = await page.query_selector_all("button")
     candidates = []
@@ -152,7 +221,10 @@ async def gather_candidate_buttons(page):
             if not combined.strip():
                 continue
 
-            if is_friday_or_saturday(combined) and disabled is None:
+            # Must be Friday/Saturday, dinner service, and within date range
+            if (is_friday_or_saturday(combined) and 
+                disabled is None and
+                is_within_date_range(combined)):
                 candidates.append((btn, aria or text))
         except:
             pass
@@ -192,6 +264,34 @@ async def check_single_date(page, label):
         await target_btn.click()
         await page.wait_for_load_state("networkidle", timeout=10000)
         
+        # Look for time slot selection (dinner slots)
+        await asyncio.sleep(2)
+        
+        # Check if there are time slot buttons to select dinner
+        time_buttons = await page.query_selector_all("button")
+        dinner_slot_found = False
+        
+        for time_btn in time_buttons:
+            try:
+                time_text = (await time_btn.inner_text()).strip()
+                time_aria = (await time_btn.get_attribute("aria-label") or "").strip()
+                time_combined = f"{time_text} {time_aria}".lower()
+                
+                # Check if it's a dinner time slot
+                if is_dinner_service(time_combined):
+                    disabled = await time_btn.get_attribute("disabled")
+                    if disabled is None:
+                        print(f"   ⏰ Found dinner slot: {time_text or time_aria}")
+                        await time_btn.click()
+                        await page.wait_for_load_state("networkidle", timeout=5000)
+                        dinner_slot_found = True
+                        break
+            except:
+                pass
+        
+        if not dinner_slot_found:
+            print("   ⚠️ No available dinner time slots found")
+        
         # Click "Next / Continue"
         next_clicked = False
         for text in ["Suivant", "Next", "Continuer", "Continue"]:
@@ -227,6 +327,12 @@ async def check_dates(page):
     
     # Get all candidates
     candidates = await gather_candidate_buttons(page)
+    
+    if not candidates:
+        print("⚠️ No Friday/Saturday dinner dates found in the next 4 months")
+        return []
+    
+    print(f"📋 Will check {len(candidates)} dates")
     
     for _, label in candidates:
         # Reset to calendar page
