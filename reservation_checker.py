@@ -90,35 +90,58 @@ def send_availability_alert(dates):
     body = (
         "🚨 REAL availability detected at Les Grands Buffets!\n\n"
         "Dates:\n"
-        + "\n".join(dates)
-        + f"\n\nBook immediately:\n{RESERVATION_URL}\n\n"
-        + "The monitoring script will now stop running."
+        + "\n".join(f"  • {date}" for date in dates)
+        + f"\n\n🔗 Book immediately:\n{RESERVATION_URL}\n\n"
+        + "⚠️ The monitoring script will now stop running.\n"
+        + f"Checked for: {GUESTS} guests, Friday/Saturday dinners, next {MONTHS_AHEAD} months"
     )
     
     # Send to main recipient
-    send_email("🍽️ Les Grands Buffets — Availability Found!", body, RECIPIENT)
+    success1 = send_email("🍽️ Les Grands Buffets — Availability Found!", body, RECIPIENT)
     
     # Send to monitoring email
-    send_email("🍽️ Les Grands Buffets — Availability Found!", body, MONITORING_EMAIL)
+    success2 = send_email("🍽️ Les Grands Buffets — Availability Found!", body, MONITORING_EMAIL)
+    
+    return success1 or success2
 
 
 def send_status_report(state):
     """Send 6-hour status report to monitoring email"""
     now = datetime.now()
     
+    # Calculate uptime
+    uptime = "N/A"
+    if state.get('last_report_time'):
+        try:
+            last = datetime.fromisoformat(state['last_report_time'])
+            hours = int((now - last).total_seconds() / 3600)
+            uptime = f"{hours} hours"
+        except:
+            pass
+    
     body = (
-        f"📊 Les Grands Buffets Monitoring Report\n\n"
-        f"Report Time: {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
-        f"Total Runs: {state['total_runs']}\n"
-        f"Successful Finds: {state['successful_finds']}\n"
-        f"Last Run: {state.get('last_run_time', 'N/A')}\n"
-        f"Reservation Found: {'Yes ✅' if state['reservation_found'] else 'No ❌'}\n\n"
+        f"📊 Les Grands Buffets Monitoring Report\n"
+        f"{'='*50}\n\n"
+        f"⏰ Report Time: {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"📈 Total Runs: {state['total_runs']}\n"
+        f"✅ Successful Finds: {state['successful_finds']}\n"
+        f"🕐 Last Run: {state.get('last_run_time', 'N/A')}\n"
+        f"⏳ Uptime Since Last Report: {uptime}\n"
+        f"🎯 Reservation Found: {'Yes ✅' if state['reservation_found'] else 'No ❌'}\n\n"
+        f"🔍 Search Criteria:\n"
+        f"  • Days: Friday & Saturday only\n"
+        f"  • Service: {SERVICE_TYPE.title()}\n"
+        f"  • Guests: {GUESTS}\n"
+        f"  • Time Range: Next {MONTHS_AHEAD} months\n\n"
+        f"{'='*50}\n"
         f"Status: {'🎉 SUCCESS - Script will stop' if state['reservation_found'] else '✅ Running normally'}\n\n"
         f"Next report in 6 hours (unless reservation found)."
     )
     
-    send_email("📊 Reservation Monitor - 6 Hour Report", body, MONITORING_EMAIL)
-    print("📧 Status report sent to monitoring email")
+    success = send_email("📊 Reservation Monitor - 6 Hour Report", body, MONITORING_EMAIL)
+    if success:
+        print("📧 Status report sent to monitoring email")
+    return success
 
 
 def should_send_report(state):
@@ -329,12 +352,14 @@ async def check_dates(page):
     candidates = await gather_candidate_buttons(page)
     
     if not candidates:
-        print("⚠️ No Friday/Saturday dinner dates found in the next 4 months")
+        print(f"⚠️ No Friday/Saturday {SERVICE_TYPE} dates found in the next {MONTHS_AHEAD} months")
         return []
     
     print(f"📋 Will check {len(candidates)} dates")
     
-    for _, label in candidates:
+    for idx, (_, label) in enumerate(candidates, 1):
+        print(f"\n--- Checking {idx}/{len(candidates)} ---")
+        
         # Reset to calendar page
         await page.goto(RESERVATION_URL, wait_until="networkidle")
         await asyncio.sleep(1)
@@ -371,12 +396,14 @@ async def run_check():
     # Check if reservation was already found
     if state.get("reservation_found", False):
         print("🛑 Reservation already found. Script is stopped.")
-        print("To restart monitoring, delete run_state.json")
+        print("💡 To restart monitoring, delete run_state.json from GitHub artifacts")
         sys.exit(0)
     
     browser = None
+    page = None
     try:
-        print(f"🚀 Starting check at {datetime.now()}")
+        print(f"🚀 Starting check #{state['total_runs'] + 1} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"🔍 Looking for: {GUESTS} guests, Friday/Saturday {SERVICE_TYPE}, next {MONTHS_AHEAD} months\n")
         
         # Update run count
         state["total_runs"] += 1
@@ -385,6 +412,9 @@ async def run_check():
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
+            
+            # Set a reasonable timeout
+            page.set_default_timeout(15000)
 
             print("🌐 Loading reservation page...")
             await page.goto(RESERVATION_URL, wait_until="networkidle")
@@ -410,37 +440,50 @@ async def run_check():
             results = await check_dates(page)
             
             if results:
-                print(f"\n🎉 Found {len(results)} available dates!")
+                print(f"\n🎉🎉🎉 FOUND {len(results)} AVAILABLE DATES! 🎉🎉🎉")
+                for date in results:
+                    print(f"  ✅ {date}")
+                
                 state["successful_finds"] += 1
                 state["reservation_found"] = True
                 save_state(state)
                 
                 # Send immediate alerts
-                send_availability_alert(results)
+                if send_availability_alert(results):
+                    print("\n✅ Alert emails sent successfully!")
+                else:
+                    print("\n⚠️ Failed to send alert emails")
                 
                 await browser.close()
                 
                 print("\n🛑 RESERVATION FOUND - Script will now stop running")
-                print("Delete run_state.json to restart monitoring")
+                print("💡 To restart: delete run_state.json from GitHub artifacts")
                 sys.exit(0)  # Exit successfully but stop future runs
             else:
-                print("\n😔 No Friday/Saturday availability found.")
+                print(f"\n😔 No {SERVICE_TYPE} availability found on Friday/Saturday in next {MONTHS_AHEAD} months.")
+                print(f"✅ Checked {state['total_runs']} times so far. Will keep trying...")
             
             await browser.close()
             
     except Exception as e:
         print(f"❌ Critical error: {e}")
+        import traceback
+        traceback.print_exc()
         if browser:
-            await browser.close()
+            try:
+                await browser.close()
+            except:
+                pass
     
     # Save state
     save_state(state)
     
     # Check if we should send 6-hour report
     if should_send_report(state):
-        send_status_report(state)
-        state["last_report_time"] = datetime.now().isoformat()
-        save_state(state)
+        print("\n📧 Sending 6-hour status report...")
+        if send_status_report(state):
+            state["last_report_time"] = datetime.now().isoformat()
+            save_state(state)
     
     return state.get("reservation_found", False)
 
