@@ -232,6 +232,13 @@ async def gather_candidate_buttons(page):
 
     buttons = await page.query_selector_all("button")
     candidates = []
+    
+    # DEBUG: Log ALL buttons found
+    print(f"📊 DEBUG: Found {len(buttons)} total buttons on page")
+    
+    friday_saturday_buttons = []
+    enabled_buttons = []
+    in_range_buttons = []
 
     for btn in buttons:
         try:
@@ -243,16 +250,47 @@ async def gather_candidate_buttons(page):
 
             if not combined.strip():
                 continue
+            
+            # DEBUG: Check each filter separately
+            is_fri_sat = is_friday_or_saturday(combined)
+            is_enabled = disabled is None
+            is_in_range = is_within_date_range(combined)
+            
+            if is_fri_sat:
+                friday_saturday_buttons.append(combined)
+                
+            if is_enabled and combined.strip():
+                enabled_buttons.append(combined)
+            
+            if is_in_range:
+                in_range_buttons.append(combined)
 
-            # Must be Friday/Saturday, dinner service, and within date range
-            if (is_friday_or_saturday(combined) and 
-                disabled is None and
-                is_within_date_range(combined)):
+            # Must be Friday/Saturday, enabled, and within date range
+            if is_fri_sat and is_enabled and is_in_range:
                 candidates.append((btn, aria or text))
-        except:
+                print(f"  ✅ Candidate found: {aria or text}")
+        except Exception as e:
+            print(f"  ⚠️ Error processing button: {e}")
             pass
 
-    print(f"📅 Found {len(candidates)} candidate date buttons.")
+    # DEBUG: Show filtering results
+    print(f"\n📊 DIAGNOSTIC INFO:")
+    print(f"  • Total buttons: {len(buttons)}")
+    print(f"  • Friday/Saturday buttons: {len(friday_saturday_buttons)}")
+    print(f"  • Enabled buttons: {len(enabled_buttons)}")
+    print(f"  • In date range buttons: {len(in_range_buttons)}")
+    print(f"  • Final candidates (all filters): {len(candidates)}")
+    
+    if len(friday_saturday_buttons) > 0:
+        print(f"\n  Sample Fri/Sat buttons found:")
+        for i, btn_text in enumerate(friday_saturday_buttons[:5], 1):
+            print(f"    {i}. {btn_text}")
+    
+    if len(candidates) == 0 and len(friday_saturday_buttons) > 0:
+        print(f"\n  ⚠️ Found Fri/Sat buttons but they were filtered out!")
+        print(f"     Likely reasons: disabled or outside date range")
+
+    print(f"\n📅 Final result: {len(candidates)} candidate date buttons.")
     return candidates
 
 
@@ -290,9 +328,16 @@ async def check_single_date(page, label):
         # Look for time slot selection (dinner slots)
         await asyncio.sleep(2)
         
+        # DEBUG: Check what's on the page after clicking date
+        page_content_sample = await page.content()
+        print(f"  📄 Page loaded, checking for time slots...")
+        
         # Check if there are time slot buttons to select dinner
         time_buttons = await page.query_selector_all("button")
+        print(f"  🔍 Found {len(time_buttons)} buttons for time selection")
+        
         dinner_slot_found = False
+        all_time_slots = []
         
         for time_btn in time_buttons:
             try:
@@ -300,20 +345,31 @@ async def check_single_date(page, label):
                 time_aria = (await time_btn.get_attribute("aria-label") or "").strip()
                 time_combined = f"{time_text} {time_aria}".lower()
                 
+                if time_text or time_aria:
+                    all_time_slots.append(f"{time_text or time_aria}")
+                
                 # Check if it's a dinner time slot
                 if is_dinner_service(time_combined):
                     disabled = await time_btn.get_attribute("disabled")
                     if disabled is None:
-                        print(f"   ⏰ Found dinner slot: {time_text or time_aria}")
+                        print(f"   ✅ Found available dinner slot: {time_text or time_aria}")
                         await time_btn.click()
                         await page.wait_for_load_state("networkidle", timeout=5000)
                         dinner_slot_found = True
                         break
+                    else:
+                        print(f"   ❌ Dinner slot disabled: {time_text or time_aria}")
             except:
                 pass
         
+        # DEBUG: Show what time slots we found
+        if len(all_time_slots) > 0:
+            print(f"   📋 Time slots found: {', '.join(all_time_slots[:10])}")
+        
         if not dinner_slot_found:
-            print("   ⚠️ No available dinner time slots found")
+            print(f"   ⚠️ No available dinner time slots found")
+            # Maybe we need to just click "Next" without selecting a time?
+            print(f"   💡 Attempting to proceed without time selection...")
         
         # Click "Next / Continue"
         next_clicked = False
@@ -321,26 +377,38 @@ async def check_single_date(page, label):
             try:
                 await page.locator(f"text={text}").first.click(timeout=3000)
                 next_clicked = True
+                print(f"   ✅ Clicked '{text}' button")
                 break
             except:
                 pass
         
         if not next_clicked:
-            print("⚠️ Could not find next button")
+            print("   ⚠️ Could not find next button")
             return False
         
         await page.wait_for_load_state("networkidle", timeout=10000)
         
         # Check if fully booked
+        content_sample = (await page.content())[:500].lower()
+        print(f"   📄 Checking for 'fully booked' message...")
+        
         if await is_fully_booked(page):
-            print("❌ Fully booked.")
+            print("   ❌ Fully booked.")
             return False
         else:
-            print("🔥 REAL availability found!")
+            print("   🔥 REAL availability found!")
+            # DEBUG: Save a screenshot if possible
+            try:
+                await page.screenshot(path=f"availability_found_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+                print("   📸 Screenshot saved!")
+            except:
+                pass
             return True
             
     except Exception as e:
         print(f"⚠️ Error checking {label}: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
