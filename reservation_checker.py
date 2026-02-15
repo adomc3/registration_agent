@@ -24,11 +24,13 @@ FULLY_BOOKED_PHRASES = [
     "restaurant is fully booked",
     "complet pour ce service",
     "restaurant est complet",
-    "complet"
+    "aucune disponibilité",
+    "no availability"
 ]
 
 DINNER_KEYWORDS = ["dinner", "dîner", "diner", "soir", "evening", "19:", "20:", "21:"]
 LUNCH_KEYWORDS = ["lunch", "déjeuner", "dejeuner", "midi", "12:", "13:", "14:"]
+FRIDAY_SATURDAY_KEYWORDS = ["fri", "friday", "vendredi", "ven", "sat", "saturday", "samedi", "sam"]
 
 STATE_FILE = "run_state.json"
 
@@ -157,9 +159,9 @@ def should_send_report(state):
 
 
 def is_friday_or_saturday(text: str) -> bool:
-    """Check if text contains Friday or Saturday"""
+    """Check if text contains Friday or Saturday names/abbreviations."""
     text = text.lower()
-    return any(day in text for day in ["fri", "vendredi", "sat", "samedi"])
+    return any(day in text for day in FRIDAY_SATURDAY_KEYWORDS)
 
 
 def is_dinner_service(text: str) -> bool:
@@ -178,51 +180,56 @@ def is_dinner_service(text: str) -> bool:
 
 
 def is_within_date_range(text: str) -> bool:
-    """Check if date is within the next 4 months (INCLUDE all dates in this range)"""
-    from datetime import datetime, timedelta
+    """Check if date is within the configured monitoring horizon."""
     import re
-    
-    # Try to extract date from text
-    # Common formats: "Friday 25 April", "Vendredi 25 avril 2025", etc.
-    months_en = ["january", "february", "march", "april", "may", "june", 
-                 "july", "august", "september", "october", "november", "december"]
-    months_fr = ["janvier", "février", "mars", "avril", "mai", "juin",
-                 "juillet", "août", "septembre", "octobre", "novembre", "décembre"]
-    
+
+    months_lookup = {
+        "january": 1, "janvier": 1, "jan": 1,
+        "february": 2, "février": 2, "fevrier": 2, "feb": 2,
+        "march": 3, "mars": 3,
+        "april": 4, "avril": 4, "apr": 4,
+        "may": 5, "mai": 5,
+        "june": 6, "juin": 6,
+        "july": 7, "juillet": 7, "jul": 7,
+        "august": 8, "août": 8, "aout": 8, "aug": 8,
+        "september": 9, "septembre": 9, "sep": 9, "sept": 9,
+        "october": 10, "octobre": 10, "oct": 10,
+        "november": 11, "novembre": 11, "nov": 11,
+        "december": 12, "décembre": 12, "decembre": 12, "dec": 12,
+    }
+
     text_lower = text.lower()
-    
-    # Find month in text
+
     month_num = None
-    for i, month in enumerate(months_en + months_fr, 1):
-        if month in text_lower:
-            month_num = (i % 12) if i > 12 else i
+    for name, month in months_lookup.items():
+        if name in text_lower:
+            month_num = month
             break
-    
+
     if not month_num:
-        # Can't determine date, include it to be safe
         return True
-    
-    # Extract day number
+
     day_match = re.search(r'\b(\d{1,2})\b', text)
     if not day_match:
         return True
-    
+
     day_num = int(day_match.group(1))
-    
-    # Extract or assume year
+
     year_match = re.search(r'\b(20\d{2})\b', text)
-    current_year = datetime.now().year
-    year_num = int(year_match.group(1)) if year_match else current_year
-    
+    today = datetime.now().date()
+
+    if year_match:
+        year_num = int(year_match.group(1))
+    else:
+        year_num = today.year
+        if month_num < today.month:
+            year_num += 1
+
     try:
-        date_found = datetime(year_num, month_num, day_num)
-        today = datetime.now()
-        max_date = today + timedelta(days=MONTHS_AHEAD * 30)
-        
-        # INCLUDE dates from today up to 4 months ahead
+        date_found = datetime(year_num, month_num, day_num).date()
+        max_date = (datetime.now() + timedelta(days=MONTHS_AHEAD * 30)).date()
         return today <= date_found <= max_date
-    except:
-        # Invalid date, include it to be safe
+    except Exception:
         return True
 
 
@@ -243,6 +250,8 @@ async def gather_candidate_buttons(page):
     for btn in buttons:
         try:
             disabled = await btn.get_attribute("disabled")
+            aria_disabled = (await btn.get_attribute("aria-disabled") or "").lower()
+            btn_class = (await btn.get_attribute("class") or "").lower()
             text = (await btn.inner_text()).strip()
             aria = (await btn.get_attribute("aria-label") or "").strip()
 
@@ -253,7 +262,7 @@ async def gather_candidate_buttons(page):
             
             # DEBUG: Check each filter separately
             is_fri_sat = is_friday_or_saturday(combined)
-            is_enabled = disabled is None
+            is_enabled = disabled is None and aria_disabled != "true" and "disabled" not in btn_class
             is_in_range = is_within_date_range(combined)
             
             if is_fri_sat:
@@ -295,12 +304,33 @@ async def gather_candidate_buttons(page):
 
 
 async def is_fully_booked(page):
-    """Check if page shows fully booked message"""
+    """Check if page shows an explicit fully-booked message for the selected slot."""
     try:
-        content = (await page.content()).lower()
-        return any(phrase in content for phrase in FULLY_BOOKED_PHRASES)
+        page_text = (await page.inner_text("body")).lower()
+        return any(phrase in page_text for phrase in FULLY_BOOKED_PHRASES)
     except:
         return False
+
+
+async def reached_booking_step(page):
+    """Detect whether the flow advanced to a real booking form step."""
+    try:
+        booking_indicators = [
+            "input[name*='email']",
+            "input[type='email']",
+            "input[name*='phone']",
+            "input[name*='nom']",
+            "input[name*='name']",
+            "textarea",
+        ]
+
+        for selector in booking_indicators:
+            if await page.locator(selector).count() > 0:
+                return True
+    except:
+        pass
+
+    return False
 
 
 async def check_single_date(page, label):
@@ -329,7 +359,6 @@ async def check_single_date(page, label):
         await asyncio.sleep(2)
         
         # DEBUG: Check what's on the page after clicking date
-        page_content_sample = await page.content()
         print(f"  📄 Page loaded, checking for time slots...")
         
         # Check if there are time slot buttons to select dinner
@@ -388,21 +417,22 @@ async def check_single_date(page, label):
         
         await page.wait_for_load_state("networkidle", timeout=10000)
         
-        # Check if fully booked
-        content_sample = (await page.content())[:500].lower()
-        print(f"   📄 Checking for 'fully booked' message...")
-        
-        if await is_fully_booked(page):
-            print("   ❌ Fully booked.")
-            return False
-        else:
-            print("   🔥 REAL availability found!")
-            # DEBUG: Save a screenshot if possible
+        print(f"   📄 Verifying if booking can continue...")
+
+        if await reached_booking_step(page):
+            print("   🔥 REAL availability found (booking form reached)!")
             try:
                 await page.screenshot(path=f"availability_found_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
                 print("   📸 Screenshot saved!")
             except:
                 pass
+            return True
+
+        if await is_fully_booked(page):
+            print("   ❌ Fully booked.")
+            return False
+        else:
+            print("   ⚠️ Unable to confirm availability (no booking form and no explicit full message).")
             return True
             
     except Exception as e:
