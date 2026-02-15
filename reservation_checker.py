@@ -24,7 +24,8 @@ FULLY_BOOKED_PHRASES = [
     "restaurant is fully booked",
     "complet pour ce service",
     "restaurant est complet",
-    "complet"
+    "aucune disponibilité",
+    "no availability"
 ]
 
 DINNER_KEYWORDS = ["dinner", "dîner", "diner", "soir", "evening", "19:", "20:", "21:"]
@@ -295,12 +296,33 @@ async def gather_candidate_buttons(page):
 
 
 async def is_fully_booked(page):
-    """Check if page shows fully booked message"""
+    """Check if page shows an explicit fully-booked message for the selected slot."""
     try:
-        content = (await page.content()).lower()
-        return any(phrase in content for phrase in FULLY_BOOKED_PHRASES)
+        page_text = (await page.inner_text("body")).lower()
+        return any(phrase in page_text for phrase in FULLY_BOOKED_PHRASES)
     except:
         return False
+
+
+async def reached_booking_step(page):
+    """Detect whether the flow advanced to a real booking form step."""
+    try:
+        booking_indicators = [
+            "input[name*='email']",
+            "input[type='email']",
+            "input[name*='phone']",
+            "input[name*='nom']",
+            "input[name*='name']",
+            "textarea",
+        ]
+
+        for selector in booking_indicators:
+            if await page.locator(selector).count() > 0:
+                return True
+    except:
+        pass
+
+    return False
 
 
 async def check_single_date(page, label):
@@ -388,21 +410,22 @@ async def check_single_date(page, label):
         
         await page.wait_for_load_state("networkidle", timeout=10000)
         
-        # Check if fully booked
-        content_sample = (await page.content())[:500].lower()
-        print(f"   📄 Checking for 'fully booked' message...")
-        
-        if await is_fully_booked(page):
-            print("   ❌ Fully booked.")
-            return False
-        else:
-            print("   🔥 REAL availability found!")
-            # DEBUG: Save a screenshot if possible
+        print(f"   📄 Verifying if booking can continue...")
+
+        if await reached_booking_step(page):
+            print("   🔥 REAL availability found (booking form reached)!")
             try:
                 await page.screenshot(path=f"availability_found_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
                 print("   📸 Screenshot saved!")
             except:
                 pass
+            return True
+
+        if await is_fully_booked(page):
+            print("   ❌ Fully booked.")
+            return False
+        else:
+            print("   ⚠️ Unable to confirm availability (no booking form and no explicit full message).")
             return True
             
     except Exception as e:
