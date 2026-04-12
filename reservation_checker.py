@@ -17,7 +17,9 @@ MONITORING_EMAIL = os.getenv("MONITORING_EMAIL")
 RESERVATION_URL = "https://reservation.lesgrandsbuffets.com/contact"
 GUESTS = "7"
 SERVICE_TYPE = "dinner"  # "lunch" or "dinner"
-MONTHS_AHEAD = 4  # How many months to check in advance
+MONTHS_AHEAD = 2  # How many months to check in advance
+SKIP_SUMMER = True  # Skip June, July, August
+RESUME_AFTER_SUMMER = "2026-08-31"  # Resume checking after this date
 
 FULLY_BOOKED_PHRASES = [
     "we regret to inform you",
@@ -87,13 +89,17 @@ def send_email(subject, body, recipient):
 
 def send_availability_alert(dates):
     """Send availability alert to main recipient"""
+    date_range_desc = f"next {MONTHS_AHEAD} months"
+    if SKIP_SUMMER:
+        date_range_desc = f"next {MONTHS_AHEAD} months or after August 31st"
+    
     body = (
         "🚨 REAL availability detected at Les Grands Buffets!\n\n"
         "Dates:\n"
         + "\n".join(f"  • {date}" for date in dates)
         + f"\n\n🔗 Book immediately:\n{RESERVATION_URL}\n\n"
         + "⚠️ The monitoring script will now stop running.\n"
-        + f"Checked for: {GUESTS} guests, Friday/Saturday dinners, next {MONTHS_AHEAD} months"
+        + f"Checked for: {GUESTS} guests, Friday/Saturday {SERVICE_TYPE}, {date_range_desc}"
     )
     
     # Send to main recipient
@@ -119,6 +125,10 @@ def send_status_report(state):
         except:
             pass
     
+    date_range_desc = f"Next {MONTHS_AHEAD} months"
+    if SKIP_SUMMER:
+        date_range_desc = f"Next {MONTHS_AHEAD} months + after Aug 31 (skipping summer)"
+    
     body = (
         f"📊 Les Grands Buffets Monitoring Report\n"
         f"{'='*50}\n\n"
@@ -132,7 +142,7 @@ def send_status_report(state):
         f"  • Days: Friday & Saturday only\n"
         f"  • Service: {SERVICE_TYPE.title()}\n"
         f"  • Guests: {GUESTS}\n"
-        f"  • Time Range: Next {MONTHS_AHEAD} months\n\n"
+        f"  • Time Range: {date_range_desc}\n\n"
         f"{'='*50}\n"
         f"Status: {'🎉 SUCCESS - Script will stop' if state['reservation_found'] else '✅ Running normally'}\n\n"
         f"Next report in 6 hours (unless reservation found)."
@@ -178,7 +188,7 @@ def is_dinner_service(text: str) -> bool:
 
 
 def is_within_date_range(text: str) -> bool:
-    """Check if date is within the next 4 months (INCLUDE all dates in this range)"""
+    """Check if date is within next 2 months OR after August 31st (skipping summer)"""
     from datetime import datetime, timedelta
     import re
     
@@ -217,18 +227,41 @@ def is_within_date_range(text: str) -> bool:
     try:
         date_found = datetime(year_num, month_num, day_num)
         today = datetime.now()
-        max_date = today + timedelta(days=MONTHS_AHEAD * 30)
         
-        # INCLUDE dates from today up to 4 months ahead
-        return today <= date_found <= max_date
+        if SKIP_SUMMER:
+            # Two valid ranges:
+            # 1. Next 2 months from today
+            # 2. After August 31st (of current or next year)
+            
+            two_months_out = today + timedelta(days=MONTHS_AHEAD * 30)
+            resume_date = datetime.strptime(RESUME_AFTER_SUMMER, "%Y-%m-%d")
+            
+            # If resume date is in the past, use next year
+            if resume_date < today:
+                resume_date = resume_date.replace(year=resume_date.year + 1)
+            
+            # Check if date is in either valid range
+            in_near_range = today <= date_found <= two_months_out
+            in_post_summer_range = date_found >= resume_date
+            
+            return in_near_range or in_post_summer_range
+        else:
+            # Normal behavior: just check next X months
+            max_date = today + timedelta(days=MONTHS_AHEAD * 30)
+            return today <= date_found <= max_date
+            
     except:
         # Invalid date, include it to be safe
         return True
 
 
 async def gather_candidate_buttons(page):
-    """Find all enabled Friday/Saturday DINNER date buttons within 4 months"""
-    print(f"🔍 Scanning for Friday/Saturday {SERVICE_TYPE} buttons (next {MONTHS_AHEAD} months)...")
+    """Find all enabled Friday/Saturday DINNER date buttons within date range (skipping summer)"""
+    date_range_desc = f"next {MONTHS_AHEAD} months"
+    if SKIP_SUMMER:
+        date_range_desc = f"next {MONTHS_AHEAD} months + after August 31st (skipping summer)"
+    
+    print(f"🔍 Scanning for Friday/Saturday {SERVICE_TYPE} buttons ({date_range_desc})...")
 
     buttons = await page.query_selector_all("button")
     candidates = []
@@ -419,8 +452,12 @@ async def check_dates(page):
     # Get all candidates
     candidates = await gather_candidate_buttons(page)
     
+    date_range_desc = f"next {MONTHS_AHEAD} months"
+    if SKIP_SUMMER:
+        date_range_desc = f"next {MONTHS_AHEAD} months or after August 31st"
+    
     if not candidates:
-        print(f"⚠️ No Friday/Saturday {SERVICE_TYPE} dates found in the next {MONTHS_AHEAD} months")
+        print(f"⚠️ No Friday/Saturday {SERVICE_TYPE} dates found in {date_range_desc}")
         return []
     
     print(f"📋 Will check {len(candidates)} dates")
@@ -471,7 +508,12 @@ async def run_check():
     page = None
     try:
         print(f"🚀 Starting check #{state['total_runs'] + 1} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"🔍 Looking for: {GUESTS} guests, Friday/Saturday {SERVICE_TYPE}, next {MONTHS_AHEAD} months\n")
+        
+        date_range_desc = f"next {MONTHS_AHEAD} months"
+        if SKIP_SUMMER:
+            date_range_desc = f"next {MONTHS_AHEAD} months + after Aug 31st (skipping summer)"
+        
+        print(f"🔍 Looking for: {GUESTS} guests, Friday/Saturday {SERVICE_TYPE}, {date_range_desc}\n")
         
         # Update run count
         state["total_runs"] += 1
