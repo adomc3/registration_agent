@@ -24,13 +24,11 @@ FULLY_BOOKED_PHRASES = [
     "restaurant is fully booked",
     "complet pour ce service",
     "restaurant est complet",
-    "aucune disponibilité",
-    "no availability"
+    "complet"
 ]
 
 DINNER_KEYWORDS = ["dinner", "dîner", "diner", "soir", "evening", "19:", "20:", "21:"]
 LUNCH_KEYWORDS = ["lunch", "déjeuner", "dejeuner", "midi", "12:", "13:", "14:"]
-FRIDAY_SATURDAY_KEYWORDS = ["fri", "friday", "vendredi", "ven", "sat", "saturday", "samedi", "sam"]
 
 STATE_FILE = "run_state.json"
 
@@ -159,9 +157,9 @@ def should_send_report(state):
 
 
 def is_friday_or_saturday(text: str) -> bool:
-    """Check if text contains Friday or Saturday names/abbreviations."""
+    """Check if text contains Friday or Saturday"""
     text = text.lower()
-    return any(day in text for day in FRIDAY_SATURDAY_KEYWORDS)
+    return any(day in text for day in ["fri", "vendredi", "sat", "samedi"])
 
 
 def is_dinner_service(text: str) -> bool:
@@ -180,56 +178,51 @@ def is_dinner_service(text: str) -> bool:
 
 
 def is_within_date_range(text: str) -> bool:
-    """Check if date is within the configured monitoring horizon."""
+    """Check if date is within the next 4 months (INCLUDE all dates in this range)"""
+    from datetime import datetime, timedelta
     import re
-
-    months_lookup = {
-        "january": 1, "janvier": 1, "jan": 1,
-        "february": 2, "février": 2, "fevrier": 2, "feb": 2,
-        "march": 3, "mars": 3,
-        "april": 4, "avril": 4, "apr": 4,
-        "may": 5, "mai": 5,
-        "june": 6, "juin": 6,
-        "july": 7, "juillet": 7, "jul": 7,
-        "august": 8, "août": 8, "aout": 8, "aug": 8,
-        "september": 9, "septembre": 9, "sep": 9, "sept": 9,
-        "october": 10, "octobre": 10, "oct": 10,
-        "november": 11, "novembre": 11, "nov": 11,
-        "december": 12, "décembre": 12, "decembre": 12, "dec": 12,
-    }
-
+    
+    # Try to extract date from text
+    # Common formats: "Friday 25 April", "Vendredi 25 avril 2025", etc.
+    months_en = ["january", "february", "march", "april", "may", "june", 
+                 "july", "august", "september", "october", "november", "december"]
+    months_fr = ["janvier", "février", "mars", "avril", "mai", "juin",
+                 "juillet", "août", "septembre", "octobre", "novembre", "décembre"]
+    
     text_lower = text.lower()
-
+    
+    # Find month in text
     month_num = None
-    for name, month in months_lookup.items():
-        if name in text_lower:
-            month_num = month
+    for i, month in enumerate(months_en + months_fr, 1):
+        if month in text_lower:
+            month_num = (i % 12) if i > 12 else i
             break
-
+    
     if not month_num:
+        # Can't determine date, include it to be safe
         return True
-
+    
+    # Extract day number
     day_match = re.search(r'\b(\d{1,2})\b', text)
     if not day_match:
         return True
-
+    
     day_num = int(day_match.group(1))
-
+    
+    # Extract or assume year
     year_match = re.search(r'\b(20\d{2})\b', text)
-    today = datetime.now().date()
-
-    if year_match:
-        year_num = int(year_match.group(1))
-    else:
-        year_num = today.year
-        if month_num < today.month:
-            year_num += 1
-
+    current_year = datetime.now().year
+    year_num = int(year_match.group(1)) if year_match else current_year
+    
     try:
-        date_found = datetime(year_num, month_num, day_num).date()
-        max_date = (datetime.now() + timedelta(days=MONTHS_AHEAD * 30)).date()
+        date_found = datetime(year_num, month_num, day_num)
+        today = datetime.now()
+        max_date = today + timedelta(days=MONTHS_AHEAD * 30)
+        
+        # INCLUDE dates from today up to 4 months ahead
         return today <= date_found <= max_date
-    except Exception:
+    except:
+        # Invalid date, include it to be safe
         return True
 
 
@@ -250,8 +243,6 @@ async def gather_candidate_buttons(page):
     for btn in buttons:
         try:
             disabled = await btn.get_attribute("disabled")
-            aria_disabled = (await btn.get_attribute("aria-disabled") or "").lower()
-            btn_class = (await btn.get_attribute("class") or "").lower()
             text = (await btn.inner_text()).strip()
             aria = (await btn.get_attribute("aria-label") or "").strip()
 
@@ -262,7 +253,7 @@ async def gather_candidate_buttons(page):
             
             # DEBUG: Check each filter separately
             is_fri_sat = is_friday_or_saturday(combined)
-            is_enabled = disabled is None and aria_disabled != "true" and "disabled" not in btn_class
+            is_enabled = disabled is None
             is_in_range = is_within_date_range(combined)
             
             if is_fri_sat:
@@ -304,33 +295,12 @@ async def gather_candidate_buttons(page):
 
 
 async def is_fully_booked(page):
-    """Check if page shows an explicit fully-booked message for the selected slot."""
+    """Check if page shows fully booked message"""
     try:
-        page_text = (await page.inner_text("body")).lower()
-        return any(phrase in page_text for phrase in FULLY_BOOKED_PHRASES)
+        content = (await page.content()).lower()
+        return any(phrase in content for phrase in FULLY_BOOKED_PHRASES)
     except:
         return False
-
-
-async def reached_booking_step(page):
-    """Detect whether the flow advanced to a real booking form step."""
-    try:
-        booking_indicators = [
-            "input[name*='email']",
-            "input[type='email']",
-            "input[name*='phone']",
-            "input[name*='nom']",
-            "input[name*='name']",
-            "textarea",
-        ]
-
-        for selector in booking_indicators:
-            if await page.locator(selector).count() > 0:
-                return True
-    except:
-        pass
-
-    return False
 
 
 async def check_single_date(page, label):
@@ -359,6 +329,7 @@ async def check_single_date(page, label):
         await asyncio.sleep(2)
         
         # DEBUG: Check what's on the page after clicking date
+        page_content_sample = await page.content()
         print(f"  📄 Page loaded, checking for time slots...")
         
         # Check if there are time slot buttons to select dinner
@@ -417,22 +388,21 @@ async def check_single_date(page, label):
         
         await page.wait_for_load_state("networkidle", timeout=10000)
         
-        print(f"   📄 Verifying if booking can continue...")
-
-        if await reached_booking_step(page):
-            print("   🔥 REAL availability found (booking form reached)!")
+        # Check if fully booked
+        content_sample = (await page.content())[:500].lower()
+        print(f"   📄 Checking for 'fully booked' message...")
+        
+        if await is_fully_booked(page):
+            print("   ❌ Fully booked.")
+            return False
+        else:
+            print("   🔥 REAL availability found!")
+            # DEBUG: Save a screenshot if possible
             try:
                 await page.screenshot(path=f"availability_found_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
                 print("   📸 Screenshot saved!")
             except:
                 pass
-            return True
-
-        if await is_fully_booked(page):
-            print("   ❌ Fully booked.")
-            return False
-        else:
-            print("   ⚠️ Unable to confirm availability (no booking form and no explicit full message).")
             return True
             
     except Exception as e:
@@ -516,25 +486,110 @@ async def run_check():
 
             print("🌐 Loading reservation page...")
             await page.goto(RESERVATION_URL, wait_until="networkidle")
-            await asyncio.sleep(2)
-
-            # Try selecting guests
+            await asyncio.sleep(3)
+            
+            # DEBUG: Take screenshot of initial page
             try:
-                await page.select_option("select", GUESTS, timeout=3000)
-                print("👥 Guests selected.")
+                await page.screenshot(path="step1_initial.png")
+                print("📸 Screenshot saved: step1_initial.png")
             except:
-                print("⚠️ Could not select guests initially")
+                pass
 
-            # Click next if present
-            for text in ["Suivant", "Next", "Continuer", "Continue"]:
+            # Try multiple selectors for guest selection
+            guest_selected = False
+            selectors_to_try = [
+                'select[name="guests"]',
+                'select#guests', 
+                'select#numberOfGuests',
+                'select',
+                'input[name="guests"]',
+                '[data-testid="guest-selector"]',
+            ]
+            
+            for selector in selectors_to_try:
                 try:
-                    await page.locator(f"text={text}").first.click(timeout=3000)
+                    print(f"  Trying selector: {selector}")
+                    
+                    # Check if it's a select element
+                    if 'select' in selector:
+                        await page.select_option(selector, GUESTS, timeout=3000)
+                        print(f"👥 Guests selected via {selector}")
+                        guest_selected = True
+                        break
+                    else:
+                        # Try as input field
+                        await page.fill(selector, GUESTS, timeout=3000)
+                        print(f"👥 Guests entered via {selector}")
+                        guest_selected = True
+                        break
+                except Exception as e:
+                    print(f"  ❌ {selector} failed: {str(e)[:50]}")
+                    continue
+
+            if not guest_selected:
+                print("⚠️ Could not select guests - will try to proceed anyway")
+            
+            await asyncio.sleep(2)
+            
+            # DEBUG: Take screenshot after guest selection
+            try:
+                await page.screenshot(path="step2_after_guests.png")
+                print("📸 Screenshot saved: step2_after_guests.png")
+            except:
+                pass
+
+            # Try to find and click "Next/Continue" button with multiple strategies
+            next_clicked = False
+            
+            # Strategy 1: Text-based search (multiple languages)
+            next_texts = ["Next", "Suivant", "Continue", "Continuer", "Submit", "Soumettre"]
+            for text in next_texts:
+                try:
+                    # Try case-insensitive
+                    await page.get_by_text(text, exact=False).first.click(timeout=3000)
+                    print(f"✅ Clicked button with text: {text}")
+                    next_clicked = True
                     break
                 except:
                     pass
+            
+            # Strategy 2: Try common button selectors
+            if not next_clicked:
+                button_selectors = [
+                    'button[type="submit"]',
+                    'button:has-text("Next")',
+                    'button:has-text("Suivant")',
+                    'input[type="submit"]',
+                    'a.btn',
+                    'button.btn-primary',
+                ]
+                
+                for selector in button_selectors:
+                    try:
+                        await page.locator(selector).first.click(timeout=3000)
+                        print(f"✅ Clicked button with selector: {selector}")
+                        next_clicked = True
+                        break
+                    except:
+                        pass
+            
+            if next_clicked:
+                await asyncio.sleep(3)
+                await page.wait_for_load_state("networkidle", timeout=10000)
+            else:
+                print("⚠️ Could not find Next button - page might auto-advance")
 
-            await asyncio.sleep(2)
-
+            # DEBUG: Take screenshot of calendar page
+            try:
+                await page.screenshot(path="step3_calendar.png")
+                print("📸 Screenshot saved: step3_calendar.png")
+            except:
+                pass
+            
+            # DEBUG: Print page URL and title
+            print(f"📍 Current URL: {page.url}")
+            print(f"📄 Page title: {await page.title()}")
+            
             results = await check_dates(page)
             
             if results:
