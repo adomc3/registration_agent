@@ -49,6 +49,15 @@ jobs:
           path: run_state.json
           key: reservation-state-${{ github.run_number }}
       
+      - name: Upload screenshots for debugging
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots-${{ github.run_number }}
+          path: |
+            *.png
+          retention-days: 7
+      
       - name: Upload state file as artifact
         if: always()
         uses: actions/upload-artifact@v4
