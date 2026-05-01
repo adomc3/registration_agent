@@ -590,11 +590,62 @@ async def run_check():
             except:
                 pass
             
+            # CRITICAL: Handle privacy consent modal first!
+            print("🔐 Checking for privacy consent modal...")
+            consent_handled = False
+            
+            try:
+                # Look for the checkbox in the modal
+                checkbox_selectors = [
+                    'input[type="checkbox"]',
+                    'input[type="checkbox"]:near(:text("informations personnelles"))',
+                    '.modal input[type="checkbox"]',
+                ]
+                
+                for checkbox_sel in checkbox_selectors:
+                    try:
+                        checkbox = page.locator(checkbox_sel).first
+                        if await checkbox.count() > 0:
+                            # Check if not already checked
+                            is_checked = await checkbox.is_checked()
+                            if not is_checked:
+                                await checkbox.check(timeout=2000)
+                                print("  ✅ Privacy checkbox checked")
+                            
+                            # Now click CONFIRMER button
+                            confirmer_clicked = False
+                            for confirmer_sel in ['button:has-text("CONFIRMER")', 'button:has-text("Confirmer")', ':text("CONFIRMER")']:
+                                try:
+                                    await page.locator(confirmer_sel).click(timeout=3000)
+                                    print("  ✅ Clicked CONFIRMER button")
+                                    confirmer_clicked = True
+                                    consent_handled = True
+                                    await asyncio.sleep(2)
+                                    break
+                                except:
+                                    pass
+                            
+                            if confirmer_clicked:
+                                break
+                    except:
+                        pass
+                        
+            except Exception as e:
+                print(f"  ⚠️ Consent modal handling issue: {e}")
+            
+            if consent_handled:
+                print("✅ Privacy consent completed!")
+                await page.wait_for_load_state("networkidle", timeout=5000)
+            else:
+                print("⚠️ No consent modal found or already dismissed")
+            
+            await asyncio.sleep(2)
+            
             # Wait for page to be fully interactive
             await page.wait_for_load_state("domcontentloaded")
             await asyncio.sleep(2)
 
-            # Try clicking directly on guest/number elements that might open a picker
+            # Now proceed with guest selection
             guest_selected = False
             
             # Strategy 1: Look for clickable elements with guest-related text
