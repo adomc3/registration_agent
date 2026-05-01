@@ -64,6 +64,13 @@ def save_state(state):
         print(f"⚠️ Could not save state: {e}")
 
 
+def update_debug_info(state, debug_data):
+    """Update debug information in state for reporting"""
+    if "last_debug_info" not in state:
+        state["last_debug_info"] = {}
+    state["last_debug_info"] = debug_data
+
+
 def send_email(subject, body, recipient):
     """Send email notification"""
     try:
@@ -129,6 +136,30 @@ def send_status_report(state):
     if SKIP_SUMMER:
         date_range_desc = f"Next {MONTHS_AHEAD} months + after Aug 31 (skipping summer)"
     
+    # Build debug section
+    debug_section = ""
+    if "last_debug_info" in state and state["last_debug_info"]:
+        debug = state["last_debug_info"]
+        debug_section = (
+            f"\n🔍 DIAGNOSTIC INFO (Last Run):\n"
+            f"  • Total buttons found: {debug.get('total_buttons', 'N/A')}\n"
+            f"  • Friday/Saturday buttons: {debug.get('friday_saturday_buttons', 'N/A')}\n"
+            f"  • Enabled buttons: {debug.get('enabled_buttons', 'N/A')}\n"
+            f"  • In date range buttons: {debug.get('in_range_buttons', 'N/A')}\n"
+            f"  • Final candidates: {debug.get('final_candidates', 'N/A')}\n"
+        )
+        
+        if debug.get('sample_buttons'):
+            debug_section += f"\n  Sample buttons found:\n"
+            for i, btn in enumerate(debug['sample_buttons'][:3], 1):
+                debug_section += f"    {i}. {btn}\n"
+        
+        if debug.get('guest_selected') is not None:
+            debug_section += f"\n  • Guest selection: {'✅ Success' if debug['guest_selected'] else '❌ Failed'}\n"
+        
+        if debug.get('current_url'):
+            debug_section += f"  • Current page: {debug['current_url']}\n"
+    
     body = (
         f"📊 Les Grands Buffets Monitoring Report\n"
         f"{'='*50}\n\n"
@@ -142,7 +173,8 @@ def send_status_report(state):
         f"  • Days: Friday & Saturday only\n"
         f"  • Service: {SERVICE_TYPE.title()}\n"
         f"  • Guests: {GUESTS}\n"
-        f"  • Time Range: {date_range_desc}\n\n"
+        f"  • Time Range: {date_range_desc}\n"
+        f"{debug_section}\n"
         f"{'='*50}\n"
         f"Status: {'🎉 SUCCESS - Script will stop' if state['reservation_found'] else '✅ Running normally'}\n\n"
         f"Next report in 6 hours (unless reservation found)."
@@ -324,7 +356,18 @@ async def gather_candidate_buttons(page):
         print(f"     Likely reasons: disabled or outside date range")
 
     print(f"\n📅 Final result: {len(candidates)} candidate date buttons.")
-    return candidates
+    
+    # Return both candidates and debug info
+    debug_info = {
+        "total_buttons": len(buttons),
+        "friday_saturday_buttons": len(friday_saturday_buttons),
+        "enabled_buttons": len(enabled_buttons),
+        "in_range_buttons": len(in_range_buttons),
+        "final_candidates": len(candidates),
+        "sample_buttons": friday_saturday_buttons[:5] if friday_saturday_buttons else []
+    }
+    
+    return candidates, debug_info
 
 
 async def is_fully_booked(page):
@@ -342,7 +385,12 @@ async def check_single_date(page, label):
         print(f"➡️ Checking: {label}")
         
         # Find and click the button
-        buttons = await gather_candidate_buttons(page)
+        buttons_data = await gather_candidate_buttons(page)
+        if isinstance(buttons_data, tuple):
+            buttons, _ = buttons_data
+        else:
+            buttons = buttons_data
+            
         target_btn = None
         
         for btn, btn_label in buttons:
@@ -450,7 +498,12 @@ async def check_dates(page):
     available_dates = []
     
     # Get all candidates
-    candidates = await gather_candidate_buttons(page)
+    candidates_data = await gather_candidate_buttons(page)
+    if isinstance(candidates_data, tuple):
+        candidates, debug_info = candidates_data
+    else:
+        candidates = candidates_data
+        debug_info = {}
     
     date_range_desc = f"next {MONTHS_AHEAD} months"
     if SKIP_SUMMER:
@@ -458,7 +511,7 @@ async def check_dates(page):
     
     if not candidates:
         print(f"⚠️ No Friday/Saturday {SERVICE_TYPE} dates found in {date_range_desc}")
-        return []
+        return [], debug_info
     
     print(f"📋 Will check {len(candidates)} dates")
     
@@ -490,7 +543,7 @@ async def check_dates(page):
         if await check_single_date(page, label):
             available_dates.append(label)
     
-    return available_dates
+    return available_dates, debug_info
 
 
 async def run_check():
@@ -536,37 +589,79 @@ async def run_check():
                 print("📸 Screenshot saved: step1_initial.png")
             except:
                 pass
+            
+            # Wait for page to be fully interactive
+            await page.wait_for_load_state("domcontentloaded")
+            await asyncio.sleep(2)
 
-            # Try multiple selectors for guest selection
+            # Try clicking directly on guest/number elements that might open a picker
             guest_selected = False
-            selectors_to_try = [
-                'select[name="guests"]',
-                'select#guests', 
-                'select#numberOfGuests',
-                'select',
-                'input[name="guests"]',
-                '[data-testid="guest-selector"]',
+            
+            # Strategy 1: Look for clickable elements with guest-related text
+            clickable_attempts = [
+                'div:has-text("guests")',
+                'div:has-text("personnes")', 
+                'div:has-text("Nombre")',
+                'span:has-text("7")',
+                '[role="combobox"]',
+                '[role="button"]:has-text("guests")',
             ]
             
-            for selector in selectors_to_try:
+            for selector in clickable_attempts:
                 try:
-                    print(f"  Trying selector: {selector}")
-                    
-                    # Check if it's a select element
-                    if 'select' in selector:
-                        await page.select_option(selector, GUESTS, timeout=3000)
-                        print(f"👥 Guests selected via {selector}")
-                        guest_selected = True
-                        break
-                    else:
-                        # Try as input field
-                        await page.fill(selector, GUESTS, timeout=3000)
-                        print(f"👥 Guests entered via {selector}")
-                        guest_selected = True
-                        break
-                except Exception as e:
-                    print(f"  ❌ {selector} failed: {str(e)[:50]}")
-                    continue
+                    element = page.locator(selector).first
+                    if await element.count() > 0:
+                        print(f"  Found clickable element: {selector}")
+                        await element.click(timeout=2000)
+                        await asyncio.sleep(1)
+                        
+                        # Now try to find and click "7" in a dropdown/menu
+                        seven_clicked = False
+                        for seven_selector in ['button:has-text("7")', 'li:has-text("7")', '[data-value="7"]', 'option[value="7"]']:
+                            try:
+                                await page.locator(seven_selector).first.click(timeout=2000)
+                                print(f"👥 Selected 7 guests via {seven_selector}")
+                                guest_selected = True
+                                seven_clicked = True
+                                break
+                            except:
+                                pass
+                        
+                        if seven_clicked:
+                            break
+                except:
+                    pass
+            
+            # Strategy 2: Try traditional selectors
+            if not guest_selected:
+                selectors_to_try = [
+                    'select[name="guests"]',
+                    'select#guests', 
+                    'select#numberOfGuests',
+                    'select',
+                    'input[name="guests"]',
+                    '[data-testid="guest-selector"]',
+                ]
+                
+                for selector in selectors_to_try:
+                    try:
+                        print(f"  Trying selector: {selector}")
+                        
+                        # Check if it's a select element
+                        if 'select' in selector:
+                            await page.select_option(selector, GUESTS, timeout=3000)
+                            print(f"👥 Guests selected via {selector}")
+                            guest_selected = True
+                            break
+                        else:
+                            # Try as input field
+                            await page.fill(selector, GUESTS, timeout=3000)
+                            print(f"👥 Guests entered via {selector}")
+                            guest_selected = True
+                            break
+                    except Exception as e:
+                        print(f"  ❌ {selector} failed: {str(e)[:50]}")
+                        continue
 
             if not guest_selected:
                 print("⚠️ Could not select guests - will try to proceed anyway")
@@ -583,43 +678,41 @@ async def run_check():
             # Try to find and click "Next/Continue" button with multiple strategies
             next_clicked = False
             
-            # Strategy 1: Text-based search (multiple languages)
-            next_texts = ["Next", "Suivant", "Continue", "Continuer", "Submit", "Soumettre"]
-            for text in next_texts:
-                try:
-                    # Try case-insensitive
-                    await page.get_by_text(text, exact=False).first.click(timeout=3000)
-                    print(f"✅ Clicked button with text: {text}")
-                    next_clicked = True
-                    break
-                except:
-                    pass
+            # Strategy 1: Look for any button that might advance
+            button_patterns = [
+                'button:has-text("Next")',
+                'button:has-text("Suivant")',
+                'button:has-text("Continue")',
+                'button:has-text("Continuer")',
+                'button:has-text("Rechercher")',  # Search
+                'button:has-text("Valider")',  # Validate
+                'a:has-text("Next")',
+                'a:has-text("Suivant")',
+                'button[type="submit"]',
+                'input[type="submit"]',
+                '.btn-primary',
+                '.btn-next',
+                '[data-testid="next-button"]',
+            ]
             
-            # Strategy 2: Try common button selectors
-            if not next_clicked:
-                button_selectors = [
-                    'button[type="submit"]',
-                    'button:has-text("Next")',
-                    'button:has-text("Suivant")',
-                    'input[type="submit"]',
-                    'a.btn',
-                    'button.btn-primary',
-                ]
-                
-                for selector in button_selectors:
-                    try:
-                        await page.locator(selector).first.click(timeout=3000)
-                        print(f"✅ Clicked button with selector: {selector}")
+            for pattern in button_patterns:
+                try:
+                    btn = page.locator(pattern).first
+                    if await btn.count() > 0:
+                        await btn.click(timeout=3000)
+                        print(f"✅ Clicked button: {pattern}")
                         next_clicked = True
                         break
-                    except:
-                        pass
+                except:
+                    pass
             
             if next_clicked:
                 await asyncio.sleep(3)
                 await page.wait_for_load_state("networkidle", timeout=10000)
             else:
                 print("⚠️ Could not find Next button - page might auto-advance")
+                # Maybe the calendar is already visible, or appears after a delay
+                await asyncio.sleep(3)
 
             # DEBUG: Take screenshot of calendar page
             try:
@@ -632,7 +725,19 @@ async def run_check():
             print(f"📍 Current URL: {page.url}")
             print(f"📄 Page title: {await page.title()}")
             
-            results = await check_dates(page)
+            results_data = await check_dates(page)
+            if isinstance(results_data, tuple):
+                results, debug_info = results_data
+            else:
+                results = results_data
+                debug_info = {}
+            
+            # Add extra debug info
+            debug_info['guest_selected'] = guest_selected
+            debug_info['current_url'] = page.url
+            
+            # Save debug info to state
+            update_debug_info(state, debug_info)
             
             if results:
                 print(f"\n🎉🎉🎉 FOUND {len(results)} AVAILABLE DATES! 🎉🎉🎉")
