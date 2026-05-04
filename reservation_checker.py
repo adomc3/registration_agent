@@ -595,49 +595,77 @@ async def run_check():
             consent_handled = False
             
             try:
-                # Look for the checkbox in the modal
-                checkbox_selectors = [
-                    'input[type="checkbox"]',
-                    'input[type="checkbox"]:near(:text("informations personnelles"))',
-                    '.modal input[type="checkbox"]',
+                # Wait a bit for modal to appear
+                await asyncio.sleep(1)
+                
+                # First, try to find and click CONFIRMER to see if we can skip checkbox requirement
+                print("  Attempting to click CONFIRMER directly...")
+                confirmer_selectors = [
+                    'button:has-text("CONFIRMER")',
+                    'button:has-text("Confirmer")',
+                    ':text("CONFIRMER")',
+                    'button:text-is("CONFIRMER")',
                 ]
                 
-                for checkbox_sel in checkbox_selectors:
+                for confirmer_sel in confirmer_selectors:
                     try:
-                        checkbox = page.locator(checkbox_sel).first
-                        if await checkbox.count() > 0:
-                            # Check if not already checked
-                            is_checked = await checkbox.is_checked()
-                            if not is_checked:
-                                await checkbox.check(timeout=2000)
-                                print("  ✅ Privacy checkbox checked")
-                            
-                            # Now click CONFIRMER button
-                            confirmer_clicked = False
-                            for confirmer_sel in ['button:has-text("CONFIRMER")', 'button:has-text("Confirmer")', ':text("CONFIRMER")']:
-                                try:
-                                    await page.locator(confirmer_sel).click(timeout=3000)
-                                    print("  ✅ Clicked CONFIRMER button")
-                                    confirmer_clicked = True
-                                    consent_handled = True
-                                    await asyncio.sleep(2)
-                                    break
-                                except:
-                                    pass
-                            
-                            if confirmer_clicked:
-                                break
-                    except:
+                        confirmer_btn = page.locator(confirmer_sel).first
+                        if await confirmer_btn.count() > 0:
+                            print(f"  Found CONFIRMER button with: {confirmer_sel}")
+                            await confirmer_btn.click(timeout=3000, force=True)
+                            print("  ✅ Clicked CONFIRMER button!")
+                            consent_handled = True
+                            await asyncio.sleep(3)
+                            await page.wait_for_load_state("networkidle", timeout=5000)
+                            break
+                    except Exception as e:
+                        print(f"  ❌ CONFIRMER click failed: {str(e)[:50]}")
                         pass
+                
+                # If that didn't work, try checking checkbox first
+                if not consent_handled:
+                    print("  Trying to check consent checkbox first...")
+                    checkbox_found = False
+                    
+                    # Try to find ANY visible checkbox
+                    all_checkboxes = await page.locator('input[type="checkbox"]').all()
+                    print(f"  Found {len(all_checkboxes)} checkboxes")
+                    
+                    for idx, checkbox in enumerate(all_checkboxes):
+                        try:
+                            is_visible = await checkbox.is_visible()
+                            if is_visible:
+                                print(f"  Checkbox {idx} is visible, trying to check it...")
+                                await checkbox.check(force=True, timeout=2000)
+                                print(f"  ✅ Checked checkbox {idx}")
+                                checkbox_found = True
+                                await asyncio.sleep(1)
+                                
+                                # Now try CONFIRMER again
+                                for confirmer_sel in confirmer_selectors:
+                                    try:
+                                        await page.locator(confirmer_sel).first.click(timeout=3000, force=True)
+                                        print("  ✅ Clicked CONFIRMER after checkbox!")
+                                        consent_handled = True
+                                        await asyncio.sleep(3)
+                                        break
+                                    except:
+                                        pass
+                                
+                                if consent_handled:
+                                    break
+                        except Exception as e:
+                            print(f"  Checkbox {idx} error: {str(e)[:30]}")
+                            pass
                         
             except Exception as e:
-                print(f"  ⚠️ Consent modal handling issue: {e}")
+                print(f"  ⚠️ Consent modal handling error: {e}")
             
             if consent_handled:
                 print("✅ Privacy consent completed!")
                 await page.wait_for_load_state("networkidle", timeout=5000)
             else:
-                print("⚠️ No consent modal found or already dismissed")
+                print("⚠️ Could not handle consent modal - will try to proceed")
             
             await asyncio.sleep(2)
             
